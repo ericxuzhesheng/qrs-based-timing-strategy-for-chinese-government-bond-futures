@@ -139,7 +139,10 @@ def build_report(
 
 ### 1. 项目概述
 
-本报告展示基于 QRS 指标的中国国债期货择时研究流程. 当前运行模式：`{metadata['mode']}`；当前运行合约：`{metadata['contract']}`；输入数据：`{metadata['input_file']}`；样本区间：`{metadata['start_date']} 至 {metadata['end_date']}`。
+本报告展示基于 QRS 指标的中国国债期货择时研究流程。
+- **理论来源**：本项目核心思路参考自中金公司（CICC）量化研究报告 **《金融工程视角下的技术择时艺术》**。
+- **运行环境**：当前运行模式：`{metadata['mode']}`；当前运行合约：`{metadata['contract']}`；输入数据：`{metadata['input_file']}`；样本区间：`{metadata['start_date']} 至 {metadata['end_date']}`。
+
 
 ### 2. 核心模型逻辑
 
@@ -211,8 +214,9 @@ Current language: English | [切换到中文](#zh)
 
 ### 1. Project Overview
 
-This report presents a QRS-based timing workflow for Chinese government bond futures. Current mode: `{metadata['mode']}`; contract: `{metadata['contract']}`; input data: `{metadata['input_file']}`; sample period: `{metadata['start_date']} to {metadata['end_date']}`.
-
+This report presents a QRS-based timing workflow for Chinese government bond futures.
+- **Source**: The core logic is inspired by the CICC quantitative research report ***The Art of Technical Timing from a Financial Engineering Perspective***.
+- **Environment**: Current mode: `{metadata['mode']}`; contract: `{metadata['contract']}`; input data: `{metadata['input_file']}`; sample period: `{metadata['start_date']} to {metadata['end_date']}`.
 ### 2. Core Model Logic
 
 #### 2.1 QRS Factor Construction

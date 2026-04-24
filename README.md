@@ -24,6 +24,7 @@
 本项目是基于 **QRS（Quantified Resistance/Support）** 指标的中国国债期货择时研究框架。
 
 - **核心策略**：当前主策略为 `intraday` 模式。
+- **理论来源**：本项目核心思路参考自中金公司（CICC）量化研究报告 **《金融工程视角下的技术择时艺术》**。
 - **数据基础**：使用 5 分钟级别的高频 OHLC 数据计算 QRS 因子。
 - **技术栈**：结合日频趋势过滤、阈值触发信号、状态机仓位管理及自动化的参数网格搜索。
 - **研究对象**：重点针对国债期货 T（10年期）、TL（30年期）等活跃合约。
@@ -172,6 +173,7 @@ Current language: English | [切换到中文](#zh)
 This project provides a research framework for **QRS (Quantified Resistance/Support)** based timing strategies in the Chinese government bond futures market.
 
 - **Main Strategy**: The current primary mode is `intraday`.
+- **Source**: The core project logic is inspired by the CICC (China International Capital Corporation) quantitative research report ***The Art of Technical Timing from a Financial Engineering Perspective***.
 - **Data Foundation**: Computes QRS factors using 5-minute high-frequency OHLC data.
 - **Features**: Includes daily trend filtering, threshold-based signals, state-machine position management, and automated grid search optimization.
 - **Assets**: Targeted at active contracts like T (10-year) and TL (30-year).
