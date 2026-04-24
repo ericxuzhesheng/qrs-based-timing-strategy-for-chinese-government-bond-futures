@@ -59,18 +59,18 @@ $$
 QRS_t = Signal_t \times Penalty_t
 $$
 
-### 2.3 动态参数优化框架
+### 2.3 动态参数优化框架 (Dynamic Optimization Framework)
 
 传统静态 Grid Search 容易陷入过拟合。本项目升级为动态参数选择框架：
 
-1. **因子预测能力评价 (Predictive Power)**：使用 IC、Rank IC 和未来收益分位差 (Future Return Spread) 评价 QRS 因子对未来 $h$ 个 Bar 收益的解释力。
-2. **滚动训练窗口 (Rolling Train Window)**：每次取过去 $W_{train}$ 天作为训练集。
-3. **两步法参数选择**：
-   - 第一步：在训练集内选择 Rank IC 最高的 QRS 因子参数 $(N, M, n)$。
-   - 第二步：基于最优因子，选择训练集内 Sharpe Ratio 最高的信号参数 $(S, \text{trend\_method})$。
-4. **样本外执行 (Walk-Forward)**：将选出的参数用于下一段 $W_{test}$ 天的样本外区间。
+1. **因子预测能力评价 (Predictive Power)**：使用 IC、Rank IC 和未来收益分位差 (Future Return Spread) 评价 QRS 因子对未来 `h` 个 Bar 收益的解释力。
+2. **滚动训练窗口 (Rolling Train Window)**：每次取过去 `W_train` 天作为训练集。
+3. **两步法参数选择 (Two-step Selection)**：
+   - **第一步**：在训练集内选择 Rank IC 最高的 QRS 因子参数组合 `(N, M, n)`。
+   - **第二步**：基于最优因子，选择训练集内 Sharpe Ratio 最高的信号参数组合 `(S, trend_method)`。
+4. **样本外执行 (Walk-Forward)**：将选出的参数用于下一段 `W_test` 天的样本外区间。
 
-### 2.4 趋势过滤与状态机
+### 2.4 趋势过滤与状态机 (Trend Filter & State Machine)
 
 为了控制高频交易的过激行为，本项目引入了日频级别的趋势过滤机制。
 信号生成逻辑遵循状态机规则：
@@ -78,8 +78,8 @@ $$
 $$
 Pos_t =
 \begin{cases}
-1, & QRS_t > S \text{ and } Trend_{up,t} = True \\
--1, & QRS_t < -S \text{ and } Trend_{down,t} = True \\
+1, & \text{if } QRS_t > S \text{ and } Trend_{up,t} = \text{True} \\
+-1, & \text{if } QRS_t < -S \text{ and } Trend_{down,t} = \text{True} \\
 Pos_{t-1}, & \text{otherwise}
 \end{cases}
 $$
@@ -200,11 +200,11 @@ $$
 
 ### 2.3 Dynamic Optimization Framework
 Traditional grid searches often suffer from look-ahead bias and overfitting. This project implements a **Walk-Forward** framework:
-1. **Factor Evaluation**: Measure the factor's predictive power for future $h$ bars using Rank IC and Quantile Spreads.
+1. **Factor Evaluation**: Measure the factor's predictive power for future `h` bars using Rank IC and Quantile Spreads.
 2. **Two-Step Selection**:
-   - **Step 1**: Select the best QRS parameters $(N, M, n)$ based on Rank IC in the training window.
-   - **Step 2**: Select the best signal parameters $(S, \text{trend})$ based on Sharpe Ratio in the training window.
-3. **Execution**: Apply optimized parameters to the subsequent out-of-sample test window.
+   - **Step 1**: Select the best QRS parameters `(N, M, n)` based on Rank IC in the training window.
+   - **Step 2**: Select the best signal parameters `(S, trend_method)` based on Sharpe Ratio in the training window.
+3. **Execution**: Apply optimized parameters to the subsequent out-of-sample test window `W_test`.
 
 ### 2.4 Trend Filter & State Machine
 The strategy uses a daily trend filter to align high-frequency signals with macro trends. The position management follows a state machine rule:
@@ -212,8 +212,8 @@ The strategy uses a daily trend filter to align high-frequency signals with macr
 $$
 Pos_t =
 \begin{cases}
-1, & QRS_t > S \text{ and } Trend_{up,t} = True \\
--1, & QRS_t < -S \text{ and } Trend_{down,t} = True \\
+1, & \text{if } QRS_t > S \text{ and } Trend_{up,t} = \text{True} \\
+-1, & \text{if } QRS_t < -S \text{ and } Trend_{down,t} = \text{True} \\
 Pos_{t-1}, & \text{otherwise}
 \end{cases}
 $$
