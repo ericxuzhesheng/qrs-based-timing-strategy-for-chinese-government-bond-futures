@@ -16,6 +16,42 @@ DEFAULT_COMPARE_LAG_DAYS = [1, 2, 3]
 DEFAULT_MA_SHORT = [3, 5, 10]
 DEFAULT_MA_LONG = [10, 20, 30]
 
+# New Grids for Dynamic Selection
+FAST_QRS_GRID = [
+    {"N": 16, "M": 600, "n": 2.0},
+    {"N": 20, "M": 800, "n": 2.0},
+]
+
+FAST_SIGNAL_GRID = [
+    {"S": 0.3, "trend_method": "ma_compare", "ma_len_days": 5, "compare_lag_days": 2},
+    {"S": 0.5, "trend_method": "ma_compare", "ma_len_days": 5, "compare_lag_days": 2},
+    {"S": 0.5, "trend_method": "price_compare", "ma_len_days": 5},
+]
+
+FULL_QRS_GRID = []
+for N in [10, 16, 20, 24]:
+    for M in [240, 480, 600, 800]:
+        for n in [1.0, 2.0]:
+            for norm in [True, False]:
+                FULL_QRS_GRID.append({"N": N, "M": M, "n": n, "normalize_penalty": norm})
+
+FULL_SIGNAL_GRID = []
+# ma_compare
+for S in [0.2, 0.3, 0.4, 0.5, 0.6]:
+    for ma in [3, 5, 10]:
+        for lag in [1, 2, 3]:
+            FULL_SIGNAL_GRID.append({"S": S, "trend_method": "ma_compare", "ma_len_days": ma, "compare_lag_days": lag})
+# price_compare
+for S in [0.2, 0.3, 0.4, 0.5, 0.6]:
+    for ma in [3, 5, 10]:
+        FULL_SIGNAL_GRID.append({"S": S, "trend_method": "price_compare", "ma_len_days": ma})
+# ma_cross
+for S in [0.2, 0.3, 0.4, 0.5, 0.6]:
+    for ms in [3, 5, 10]:
+        for ml in [10, 20, 30]:
+            if ms < ml:
+                FULL_SIGNAL_GRID.append({"S": S, "trend_method": "ma_cross", "ma_short": ms, "ma_long": ml})
+
 
 def iter_param_grid(
     s_values: list[float] | None = None,

@@ -20,7 +20,12 @@ from src.backtest import (
     run_intraday_backtest,
 )
 from src.data_loader import aggregate_to_daily, discover_input_file, load_market_data
-from src.grid_search import run_grid_search
+from src.grid_search import (
+    run_grid_search, 
+    FAST_QRS_GRID, FAST_SIGNAL_GRID, 
+    FULL_QRS_GRID, FULL_SIGNAL_GRID
+)
+from src.dynamic_selection import run_dynamic_qrs_selection
 from src.qrs_calculator import calculate_qrs, calculate_qrs_intraday
 from src.signal_generator import generate_qrs_signals, generate_qrs_intraday_signals
 from src.utils import ensure_dir, format_number, format_percent, markdown_table, project_path
@@ -30,16 +35,31 @@ from src.visualization import (
     plot_nav_comparison,
     plot_qrs_future_return,
     plot_qrs_price_overlay,
+    plot_static_vs_dynamic_nav,
+    plot_dynamic_param_timeline,
+    plot_dynamic_selection_score,
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run QRS timing pipeline for Chinese government bond futures.")
-    parser.add_argument("--mode", choices=["daily_baseline", "intraday"], default="intraday")
+    parser.add_argument("--mode", choices=["static", "dynamic", "full", "daily_baseline"], default="static")
     parser.add_argument("--input", default=None, help="CSV/XLSX input file. If omitted, auto-discover a file.")
     parser.add_argument("--sheet-name", default=None, help="Excel sheet name or index. Defaults to the first sheet.")
-    parser.add_argument("--contract", default="T", help="Contract label, e.g. T, TL, TF, TS.")
+    parser.add_argument("--contract", default="T", help="Contract label, e.g. T, TL, ALL.")
     parser.add_argument("--start-date", default="2024-01-01")
+    parser.add_argument("--train-window-days", type=int, default=60)
+    parser.add_argument("--test-window-days", type=int, default=10)
+    parser.add_argument("--rebalance-days", type=int, default=1)
+    parser.add_argument("--horizon-bars", type=int, default=54)
+    parser.add_argument("--selection-metric", default="rank_ic")
+    parser.add_argument("--fast-mode", action="store_true")
+    parser.add_argument("--full-grid", action="store_true")
+    parser.add_argument("--allow-short", dest="allow_short", action="store_true")
+    parser.add_argument("--no-allow-short", dest="allow_short", action="store_false")
+    parser.set_defaults(allow_short=True)
+    
+    # Legacy / Manual Override Args
     parser.add_argument("--N", type=int, default=16)
     parser.add_argument("--M", type=int, default=600)
     parser.add_argument("--rolling-window", type=int, default=18)
@@ -56,12 +76,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ma-short", type=int, default=5)
     parser.add_argument("--ma-long", type=int, default=20)
     parser.add_argument("--periods-per-year", type=int, default=252 * 54)
-    parser.add_argument("--run-grid-search", dest="run_grid_search", action="store_true")
-    parser.add_argument("--no-grid-search", dest="run_grid_search", action="store_false")
-    parser.set_defaults(run_grid_search=False)
-    parser.add_argument("--allow-short", dest="allow_short", action="store_true")
-    parser.add_argument("--no-allow-short", dest="allow_short", action="store_false")
-    parser.set_defaults(allow_short=True)
     return parser.parse_args()
 
 
@@ -277,141 +291,174 @@ This report is for quantitative research and demonstration only. It does not con
 '''
 
 
-def _save_common_outputs(bt: pd.DataFrame, summary: pd.DataFrame, metadata: dict[str, Any], debug: pd.DataFrame | None, best_params: dict[str, Any] | None) -> None:
+def _save_common_outputs(bt: pd.DataFrame, summary: pd.DataFrame, metadata: dict[str, Any], debug: pd.DataFrame | None, best_params: dict[str, Any] | None, suffix: str = "") -> None:
     figures_dir = project_path("results", "figures")
     tables_dir = project_path("results", "tables")
     ensure_dir(figures_dir)
     ensure_dir(tables_dir)
 
-    summary.to_csv(tables_dir / "backtest_summary.csv", index=False, encoding="utf-8-sig")
+    summary.to_csv(tables_dir / f"backtest_summary{suffix}.csv", index=False, encoding="utf-8-sig")
     nav_cols = [c for c in ["date", "ret_strategy", "ret_benchmark", "ret_excess", "nav_strategy", "nav_benchmark", "nav_excess", "position", "turnover"] if c in bt.columns]
     if not nav_cols:
         nav_cols = ["date", "strategy_return", "benchmark_return", "strategy_nav", "benchmark_nav", "position", "turnover"]
-    bt[nav_cols].to_csv(tables_dir / "strategy_nav.csv", index=False, encoding="utf-8-sig")
+    bt[nav_cols].to_csv(tables_dir / f"strategy_nav{suffix}.csv", index=False, encoding="utf-8-sig")
 
-    plot_qrs_price_overlay(bt, figures_dir / "qrs_price_overlay.png")
-    plot_nav_comparison(bt, figures_dir / "nav_comparison.png")
-    plot_drawdown(bt, figures_dir / "drawdown.png")
-    plot_qrs_future_return(bt, figures_dir / "qrs_future_return.png")
+    plot_qrs_price_overlay(bt, figures_dir / f"qrs_price_overlay{suffix}.png")
+    plot_nav_comparison(bt, figures_dir / f"nav_comparison{suffix}.png", title=f"Strategy NAV vs Benchmark {suffix}")
+    plot_drawdown(bt, figures_dir / f"drawdown{suffix}.png")
+    plot_qrs_future_return(bt, figures_dir / f"qrs_future_return{suffix}.png")
     if "position" in bt.columns:
-        plot_best_strategy_position(bt, figures_dir / "best_strategy_position.png")
+        plot_best_strategy_position(bt, figures_dir / f"best_strategy_position{suffix}.png")
 
-    project_path("results", "report.md").write_text(build_report(summary, metadata, debug, best_params), encoding="utf-8")
+    if suffix == "" or suffix == "_T" or suffix == "_TL":
+         project_path("results", "report.md").write_text(build_report(summary, metadata, debug, best_params), encoding="utf-8")
 
 
-def run_intraday(args: argparse.Namespace, raw: pd.DataFrame, input_path: Path) -> None:
+def _get_int(params: dict[str, Any], key: str, default: int) -> int:
+    val = params.get(key)
+    if val is None or pd.isna(val):
+        return default
+    return int(val)
+
+
+def run_static(args: argparse.Namespace, raw: pd.DataFrame, contract: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    print(f"--- Running Static Grid Search for {contract} ---")
     qrs_all = calculate_qrs_intraday(raw, N=args.N, M=args.M, n=args.r2_power)
     qrs_eval = qrs_all.loc[pd.to_datetime(qrs_all["date"]) >= pd.to_datetime(args.start_date)].copy().reset_index(drop=True)
-    if qrs_eval.empty:
-        raise ValueError(f"No rows after start date {args.start_date}")
-
-    best_params: dict[str, Any] = {
-        "S": args.S,
-        "trend_method": args.trend_method,
-        "ma_len_days": args.ma_len_days,
-        "compare_lag_days": args.compare_lag_days,
-        "ma_short": args.ma_short,
-        "ma_long": args.ma_long,
-        "grid_search": False,
-    }
-
+    
     tables_dir = project_path("results", "tables")
     ensure_dir(tables_dir)
-    if args.run_grid_search:
-        grid_results, best_params = run_grid_search(qrs_eval, allow_short=args.allow_short, periods_per_year=args.periods_per_year)
-        best_params = {k: (None if pd.isna(v) else v) for k, v in best_params.items()}
-        best_params["grid_search"] = True
-        grid_results.to_csv(tables_dir / "qrs_grid_search_results.csv", index=False, encoding="utf-8-sig")
-        (tables_dir / "best_params.json").write_text(json.dumps(best_params, ensure_ascii=False, indent=2), encoding="utf-8")
-    else:
-        (tables_dir / "best_params.json").write_text(json.dumps(best_params, ensure_ascii=False, indent=2), encoding="utf-8")
+    
+    grid_results, best_params = run_grid_search(qrs_eval, allow_short=args.allow_short, periods_per_year=args.periods_per_year)
+    # Convert best_params to JSON-friendly format
+    best_params_json = {k: (None if pd.isna(v) else v) for k, v in best_params.items()}
+    grid_results.to_csv(tables_dir / f"static_grid_results_{contract}.csv", index=False, encoding="utf-8-sig")
+    (tables_dir / f"best_params_static_{contract}.json").write_text(json.dumps(best_params_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     signal_df = generate_qrs_intraday_signals(
         qrs_eval,
         S=float(best_params["S"]),
         trend_method=str(best_params["trend_method"]),
-        ma_len_days=int(best_params.get("ma_len_days") or args.ma_len_days),
-        compare_lag_days=int(best_params.get("compare_lag_days") or args.compare_lag_days),
-        ma_short=int(best_params.get("ma_short") or args.ma_short),
-        ma_long=int(best_params.get("ma_long") or args.ma_long),
+        ma_len_days=_get_int(best_params, "ma_len_days", args.ma_len_days),
+        compare_lag_days=_get_int(best_params, "compare_lag_days", args.compare_lag_days),
+        ma_short=_get_int(best_params, "ma_short", args.ma_short),
+        ma_long=_get_int(best_params, "ma_long", args.ma_long),
         allow_short=args.allow_short,
     )
     bt = run_intraday_backtest(signal_df, periods_per_year=args.periods_per_year)
     summary = intraday_performance_summary(bt, periods_per_year=args.periods_per_year)
     debug = intraday_debug_stats(bt)
-
-    processed_path = project_path("data", "processed", "qrs_intraday.csv")
-    ensure_dir(processed_path.parent)
-    bt.to_csv(processed_path, index=False, encoding="utf-8-sig")
-
+    
     metadata = {
-        "mode": "intraday",
-        "contract": args.contract,
-        "input_file": input_path.name,
+        "mode": "static",
+        "contract": contract,
+        "input_file": "auto",
         "start_date": pd.to_datetime(bt["date"].iloc[0]).strftime("%Y-%m-%d %H:%M:%S"),
         "end_date": pd.to_datetime(bt["date"].iloc[-1]).strftime("%Y-%m-%d %H:%M:%S"),
         "data_frequency": "5-minute intraday",
         "allow_short": str(args.allow_short),
-        "run_grid_search": str(args.run_grid_search),
         "periods_per_year": str(args.periods_per_year),
         "N": str(args.N),
         "M": str(args.M),
         "r2_power": str(args.r2_power),
         "trend_method": str(best_params["trend_method"]),
     }
-    _save_common_outputs(bt, summary, metadata, debug, best_params)
-    print(f"Mode: intraday")
-    print(f"Input: {input_path}")
-    print(f"Rows: raw={len(raw)}, eval={len(qrs_eval)}, output={len(bt)}")
-    print(f"Best params: {best_params}")
-    print(summary.to_string(index=False))
-    print(debug.to_string(index=False))
+    _save_common_outputs(bt, summary, metadata, debug, best_params, suffix=f"_{contract}")
+    summary.to_csv(tables_dir / f"static_summary_{contract}.csv", index=False)
+    return bt, summary
 
 
-def run_daily_baseline(args: argparse.Namespace, raw: pd.DataFrame, input_path: Path) -> None:
-    daily = aggregate_to_daily(raw)
-    qrs = calculate_qrs(
-        daily,
-        rolling_window=args.rolling_window,
-        zscore_window=args.zscore_window,
-        r2_power=args.r2_power,
-        slope_window=args.slope_window,
-        percentile_window=args.percentile_window,
+def run_dynamic(args: argparse.Namespace, raw: pd.DataFrame, contract: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    print(f"--- Running Dynamic Walk-Forward for {contract} ---")
+    qrs_grid = FAST_QRS_GRID if args.fast_mode else FULL_QRS_GRID
+    sig_grid = FAST_SIGNAL_GRID if args.fast_mode else FULL_SIGNAL_GRID
+    
+    bt, param_trace = run_dynamic_qrs_selection(
+        raw, 
+        qrs_param_grid=qrs_grid,
+        signal_param_grid=sig_grid,
+        train_window_bars=args.train_window_days * 54,
+        rebalance_every_bars=args.rebalance_days * 54,
+        horizon_bars=args.horizon_bars,
+        selection_metric=args.selection_metric,
+        allow_short=args.allow_short,
+        periods_per_year=args.periods_per_year
     )
-    signals = generate_qrs_signals(qrs, long_threshold=args.long_threshold, exit_threshold=args.exit_threshold)
-    bt = run_backtest(signals)
-    summary = performance_summary(bt)
-    processed_path = project_path("data", "processed", "qrs_daily_baseline.csv")
-    ensure_dir(processed_path.parent)
-    bt.to_csv(processed_path, index=False, encoding="utf-8-sig")
+    
+    if bt.empty:
+        print(f"Dynamic selection returned empty result for {contract}")
+        return pd.DataFrame(), pd.DataFrame()
+        
+    summary = intraday_performance_summary(bt, periods_per_year=args.periods_per_year)
+    debug = intraday_debug_stats(bt)
+    
+    tables_dir = project_path("results", "tables")
+    figures_dir = project_path("results", "figures")
+    ensure_dir(tables_dir)
+    ensure_dir(figures_dir)
+    
+    bt.to_csv(tables_dir / f"dynamic_strategy_nav_{contract}.csv", index=False, encoding="utf-8-sig")
+    param_trace.to_csv(tables_dir / f"dynamic_params_{contract}.csv", index=False, encoding="utf-8-sig")
+    summary.to_csv(tables_dir / f"dynamic_summary_{contract}.csv", index=False)
+    
+    plot_nav_comparison(bt, figures_dir / f"dynamic_nav_comparison_{contract}.png", title=f"Dynamic Strategy NAV vs Benchmark {contract}")
+    plot_dynamic_param_timeline(param_trace, figures_dir / f"dynamic_param_timeline_{contract}.png")
+    plot_dynamic_selection_score(param_trace, figures_dir / f"dynamic_selection_score_{contract}.png")
+    
     metadata = {
-        "mode": "daily_baseline",
-        "contract": args.contract,
-        "input_file": input_path.name,
-        "start_date": pd.to_datetime(bt["date"].iloc[0]).strftime("%Y-%m-%d"),
-        "end_date": pd.to_datetime(bt["date"].iloc[-1]).strftime("%Y-%m-%d"),
-        "data_frequency": "daily aggregated baseline",
-        "allow_short": "False",
-        "run_grid_search": "False",
-        "periods_per_year": "252",
-        "N": str(args.rolling_window),
-        "M": str(args.zscore_window),
-        "r2_power": str(args.r2_power),
-        "trend_method": "none",
+        "mode": "dynamic",
+        "contract": contract,
+        "input_file": "auto",
+        "start_date": pd.to_datetime(bt["date"].iloc[0]).strftime("%Y-%m-%d %H:%M:%S"),
+        "end_date": pd.to_datetime(bt["date"].iloc[-1]).strftime("%Y-%m-%d %H:%M:%S"),
+        "data_frequency": "5-minute intraday",
+        "allow_short": str(args.allow_short),
+        "periods_per_year": str(args.periods_per_year),
     }
-    _save_common_outputs(bt, summary, metadata, None, {"mode": "daily_baseline"})
-    print(f"Mode: daily_baseline")
-    print(f"Input: {input_path}")
-    print(f"Rows: raw={len(raw)}, daily={len(daily)}, output={len(bt)}")
+    _save_common_outputs(bt, summary, metadata, debug, {"mode": "dynamic"}, suffix=f"_dynamic_{contract}")
+    return bt, summary
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
-    input_path = _resolve_input(args.input, args.contract)
-    raw = load_market_data(input_path, sheet_name=_sheet_value(args.sheet_name))
-    if args.mode == "intraday":
-        run_intraday(args, raw, input_path)
-    else:
-        run_daily_baseline(args, raw, input_path)
+    contracts = ["T", "TL"] if args.contract == "ALL" else [args.contract]
+    all_results = []
+    
+    for contract in contracts:
+        try:
+            input_path = _resolve_input(args.input, contract)
+            raw = load_market_data(input_path, sheet_name=_sheet_value(args.sheet_name))
+        except Exception as e:
+            print(f"Error loading data for {contract}: {e}")
+            continue
+            
+        static_bt = None
+        dynamic_bt = None
+        
+        if args.mode in ["static", "full"]:
+            static_bt, static_summary = run_static(args, raw, contract)
+            s_res = static_summary.loc[static_summary["portfolio"] == "QRS Strategy"].iloc[0].to_dict()
+            s_res.update({"contract": contract, "method": "static_grid"})
+            all_results.append(s_res)
+            
+        if args.mode in ["dynamic", "full"]:
+            dynamic_bt, dynamic_summary = run_dynamic(args, raw, contract)
+            if not dynamic_summary.empty:
+                d_res = dynamic_summary.loc[dynamic_summary["portfolio"] == "QRS Strategy"].iloc[0].to_dict()
+                d_res.update({"contract": contract, "method": "dynamic_walk_forward"})
+                all_results.append(d_res)
+                
+        if args.mode == "full" and static_bt is not None and dynamic_bt is not None:
+            figures_dir = project_path("results", "figures")
+            plot_static_vs_dynamic_nav(static_bt, dynamic_bt, figures_dir / f"static_vs_dynamic_nav_{contract}.png", title=f"Static vs Dynamic QRS NAV ({contract})")
+            
+        if args.mode == "daily_baseline":
+            run_daily_baseline(args, raw, input_path)
+
+    if all_results:
+        res_df = pd.DataFrame(all_results)
+        res_df.to_csv(project_path("results", "tables", "qrs_static_vs_dynamic_comparison.csv"), index=False)
+        print("\n=== Comparison Summary ===")
+        print(res_df[["contract", "method", "annualized_return", "sharpe_ratio", "max_drawdown"]].to_string(index=False))
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ COLUMN_ALIASES = {
 }
 REQUIRED_COLUMNS = {"date", "open", "high", "low", "close"}
 OPTIONAL_COLUMNS = ["volume", "open_interest"]
-SEARCH_KEYWORDS = ("qrs", "t", "国债期货", "cgb", "daily", "latest", "10年")
+SEARCH_KEYWORDS = ("qrs", "t", "国债期货", "cgb", "daily", "latest", "10年", "30年", "tl")
 
 
 def _normalize_name(value: object) -> str:
@@ -160,15 +160,21 @@ def discover_input_file(contract: str = "T", search_dirs: Iterable[str | Path] |
     def score(path: Path) -> tuple[int, float]:
         name = path.name.lower()
         value = 0
-        if contract_lower and contract_lower in name:
-            value += 20
+        if contract_lower == "tl":
+             if "tl" in name or "30" in name or "30年" in name:
+                 value += 50
+        elif contract_lower == "t":
+             if ("10" in name or "10年" in name) and ("30" not in name):
+                 value += 50
+             elif " t" in name or name.startswith("t"):
+                 value += 30
+                 
         for keyword in SEARCH_KEYWORDS:
             if keyword.lower() in name:
                 value += 5
-        if "30" in name or "tl" in name:
-            value -= 5 if contract_lower == "t" else 0
-        if "10" in name:
-            value += 8 if contract_lower == "t" else 0
+        
         return value, path.stat().st_mtime
 
-    return sorted(candidates, key=score, reverse=True)[0]
+    best_match = sorted(candidates, key=score, reverse=True)[0]
+    print(f"Contract {contract}: selected file {best_match.name}")
+    return best_match

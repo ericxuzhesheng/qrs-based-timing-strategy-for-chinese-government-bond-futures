@@ -1,0 +1,16 @@
+{
+  "S": 0.2,
+  "trend_method": "price_compare",
+  "ma_len_days": 3.0,
+  "compare_lag_days": null,
+  "ma_short": null,
+  "ma_long": null,
+  "cumulative_return": 0.3117723153775622,
+  "annualized_return": 0.13059915646083886,
+  "annualized_volatility": 0.026300689793785432,
+  "sharpe_ratio": 4.96561715623512,
+  "max_drawdown": -0.009742789231778848,
+  "calmar_ratio": 13.404698937225591,
+  "win_rate": 0.5276025561739848,
+  "turnover": 379.0
+}
