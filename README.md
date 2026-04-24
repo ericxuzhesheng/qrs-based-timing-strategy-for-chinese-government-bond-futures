@@ -62,24 +62,45 @@ $$
 | `dynamic` | `--mode dynamic` | 滚动窗口动态参数选择 + Walk-Forward 样本外回测。 |
 | `full` | `--mode full` | 同时运行 Static 与 Dynamic 模式并生成对比报告。 |
 
-## 4. 结果展示 (示例)
+## 4. 结果展示与对比 (Performance Comparison)
 
-### 4.1 Static vs Dynamic 绩效对比 (T 合约)
+本项目提供静态全样本搜索 (Static Grid Search) 与 动态样本外滚动 (Dynamic Walk-Forward) 两种模式的对比。
 
-| 模式 | 年化收益 | 夏普比率 | 最大回撤 | 换手率 |
-| --- | ---: | ---: | ---: | ---: |
-| Static Baseline | 13.06% | 4.97 | -0.97% | 379 |
-| Dynamic WF | 11.24% | 3.85 | -1.25% | 452 |
+### 4.1 绩效汇总 (Performance Summary)
 
-> 注：Dynamic 模式下参数随市场环境动态调整，虽然回测收益可能略低于全样本最优的 Static 结果，但其样本外表现更具鲁棒性。
+基于 2024-01-01 至今的回测数据（`fast-mode` 演示参数）：
 
-### 4.2 动态参数轨迹
-![Dynamic Param Timeline](results/figures/dynamic_param_timeline_T.png)
+| 合约 (Asset) | 模式 (Method) | 年化收益 (Ann. Ret) | 夏普比率 (Sharpe) | 最大回撤 (MaxDD) | 胜率 (Win Rate) |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **T (10Y)** | **Static Grid (In-sample)** | 13.06% | 4.97 | -0.97% | 52.76% |
+| **T (10Y)** | **Dynamic WF (Out-of-sample)** | 9.13% | 3.57 | -1.55% | 51.24% |
+| **TL (30Y)** | **Static Grid (In-sample)** | 48.57% | 6.78 | -2.48% | 56.42% |
+| **TL (30Y)** | **Dynamic WF (Out-of-sample)** | 36.58% | 5.08 | -2.48% | 54.81% |
 
-### 4.3 静态与动态净值对比
-![Static vs Dynamic NAV](results/figures/static_vs_dynamic_nav_T.png)
+> **结果分析**：
+> 1. **稳定性**：Dynamic 模式由于采用了样本外滚动，其 Sharpe 比率虽略低于全样本最优的 Static 模式，但更接近真实交易环境，有效降低了过度拟合（Overfitting）风险。
+> 2. **收益特征**：TL 合约由于波动率更高且趋势性更强，QRS 指标在 TL 上的表现显著优于 T 合约。
 
-## 5. 快速开始
+### 4.2 可视化对比 (Visual Comparison)
+
+#### A. 静态与动态净值对比 (NAV Comparison)
+展示全样本优化与动态参数切换下的净值走势对比。
+![Static vs Dynamic NAV T](results/figures/static_vs_dynamic_nav_T.png)
+*图：T 合约 Static vs Dynamic 净值对比*
+
+#### B. 动态参数选择轨迹 (Parameter Timeline)
+展示模型在不同市场阶段如何自动切换 $N$、$M$ 等核心参数。
+![Dynamic Param Timeline T](results/figures/dynamic_param_timeline_T.png)
+*图：T 合约动态参数切换历史*
+
+#### C. 参数评分稳定性 (Selection Score)
+展示训练集内的 Rank IC 评分与 Sharpe 比率的随时间的变化。
+![Dynamic Selection Score T](results/figures/dynamic_selection_score_T.png)
+*图：T 合约参数评分稳定性*
+
+---
+
+## 5. 快速开始 (Quick Start)
 
 ### 5.1 安装环境
 ```bash
@@ -90,17 +111,17 @@ pip install -r requirements.txt
 
 ### 5.2 运行 Pipeline
 ```bash
-# 运行完整研究管线 (T 和 TL 合约)
+# 运行完整对比研究 (包含 T 和 TL)
 python scripts/run_qrs_pipeline.py --mode full --contract ALL --fast-mode
 
-# 运行完整网格搜索 (计算量较大)
+# 运行高精度完整网格搜索 (耗时较长)
 python scripts/run_qrs_pipeline.py --mode full --contract ALL --full-grid
 ```
 
 ## 6. 参考文献 (References)
 
-1. **中金公司**：《金融工程视角下的技术择时艺术》 —— 提供了 QRS 指标的理论原型与参数化择时思路。
-2. **浙商证券**：《基于 QRS 因子的双周期共振日内择时与“每日一图”体系更新》 —— 提供了 QRS 在高频场景下的应用参考。
+1. **中金公司 (CICC)**：《金融工程视角下的技术择时艺术》 —— 提供了 QRS 指标的理论原型与参数化择时逻辑。
+2. **浙商证券 (Zheshang Securities)**：《基于 QRS 因子的双周期共振日内择时与“每日一图”体系更新》 —— 提供了 QRS 在高频场景下的应用参考。
 
 ---
 
@@ -114,52 +135,71 @@ Current language: English | [切换到中文](#zh)
 
 ## 1. Project Overview
 
-This project provides a research framework for **QRS (Quantified Resistance/Support)** based timing strategies with **Dynamic Parameter Selection** and **Walk-Forward Backtesting**.
+This project provides a comprehensive research framework for **QRS (Quantified Resistance/Support)** based timing strategies in the Chinese government bond futures market.
 
-- **Core Strategy**: Dynamic parameter optimization based on predictive power.
+- **Core Strategy**: Dynamic Parameter Selection via **Walk-Forward (WF)** backtesting.
 - **Source**: Inspired by CICC's report ***The Art of Technical Timing from a Financial Engineering Perspective*** and research from Zheshang Securities.
 - **Data Foundation**: 5-minute high-frequency OHLC data.
-- **Key Features**: Factor predictive evaluation (IC/Rank IC), rolling window optimization, dynamic trend filtering, state-machine position management.
+- **Key Features**: Factor predictive power evaluation (IC/Rank IC), rolling window optimization, cross-period trend filtering, and state-machine position management.
 
-## 2. Core Model Logic
+## 2. Model Logic
 
-### 2.1 QRS Factor
-Local linear regression on 5-minute bars: $high_t = \alpha + \beta \cdot low_t + \varepsilon_t$. The slope $\beta$ represents trend quality, adjusted by $R^2$ penalty.
+### 2.1 QRS Factor Construction
+A local linear regression is performed on 5-minute bars: $high_t = \alpha + \beta \cdot low_t + \varepsilon_t$. The slope $\beta$ represents the dynamic relationship between support and resistance.
 
 ### 2.2 Dynamic Optimization Framework
-1. **Predictive Power Evaluation**: Measures factor effectiveness using IC, Rank IC, and Quantile Spreads.
-2. **Two-Step Selection**: 
-   - Optimize QRS factor parameters via Rank IC in the training window.
-   - Optimize signal parameters via Sharpe Ratio given the selected factor.
-3. **Walk-Forward Execution**: Apply optimized parameters to the subsequent out-of-sample test window.
+Traditional grid searches often suffer from look-ahead bias and overfitting. This project implements a **Walk-Forward** framework:
+1. **Factor Evaluation**: Measure the factor's predictive power for future $h$ bars using Rank IC and Quantile Spreads.
+2. **Two-Step Selection**:
+   - **Step 1**: Select the best QRS parameters $(N, M, n)$ based on Rank IC in the training window.
+   - **Step 2**: Select the best signal parameters $(S, \text{trend})$ based on Sharpe Ratio in the training window.
+3. **Execution**: Apply optimized parameters to the subsequent out-of-sample test window.
 
-## 3. Usage Modes
+## 3. Strategy Modes
 
 | Mode | Command | Description |
 | --- | --- | --- |
-| `static` | `--mode static` | Traditional full-sample grid search (In-sample baseline). |
-| `dynamic` | `--mode dynamic` | Rolling window dynamic selection + Walk-forward backtest. |
-| `full` | `--mode full` | Runs both modes and generates comparative reports. |
+| `static` | `--mode static` | Full-sample grid search baseline (In-sample). |
+| `dynamic` | `--mode dynamic` | Rolling window dynamic selection + Walk-forward backtest (Out-of-sample). |
+| `full` | `--mode full` | Runs both modes and generates a detailed comparison report. |
 
-## 4. Visualizations
+## 4. Performance Comparison
 
-### 4.1 Static vs Dynamic NAV
-![Static vs Dynamic NAV](results/figures/static_vs_dynamic_nav_T.png)
+### 4.1 Summary Table
 
-### 4.2 Parameter Selection Timeline
-![Dynamic Param Timeline](results/figures/dynamic_param_timeline_T.png)
+Based on backtest data since 2024-01-01 (`fast-mode` parameters):
+
+| Asset | Method | Ann. Return | Sharpe Ratio | Max Drawdown | Win Rate |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **T (10Y)** | **Static Grid** | 13.06% | 4.97 | -0.97% | 52.76% |
+| **T (10Y)** | **Dynamic WF** | 9.13% | 3.57 | -1.55% | 51.24% |
+| **TL (30Y)** | **Static Grid** | 48.57% | 6.78 | -2.48% | 56.42% |
+| **TL (30Y)** | **Dynamic WF** | 36.58% | 5.08 | -2.48% | 54.81% |
+
+### 4.2 Visual Analysis
+
+#### A. NAV Comparison
+![Static vs Dynamic NAV T](results/figures/static_vs_dynamic_nav_T.png)
+*Figure: Static vs Dynamic Strategy NAV (T Contract)*
+
+#### B. Parameter Selection History
+![Dynamic Param Timeline T](results/figures/dynamic_param_timeline_T.png)
+*Figure: Parameter switching timeline in Dynamic Mode*
 
 ## 5. Quick Start
 
-### 5.1 Installation
 ```bash
+# Clone the repository
 git clone https://github.com/ericxuzhesheng/QRS-Based-Timing-Strategy-for-Chinese-Government-Bond-Futures.git
 cd QRS-Based-Timing-Strategy-for-Chinese-Government-Bond-Futures
-pip install -r requirements.txt
-```
 
-### 5.2 Run Pipeline
-```bash
-# Run full research pipeline for T and TL contracts
+# Run the full comparison pipeline
 python scripts/run_qrs_pipeline.py --mode full --contract ALL --fast-mode
 ```
+
+## 6. References
+
+1. **CICC**: *The Art of Technical Timing from a Financial Engineering Perspective* — Provides the theoretical prototype of the QRS indicator.
+2. **Zheshang Securities**: *Intraday Timing Based on QRS Factor and Dual-Cycle Resonance* — Application of QRS in high-frequency trading scenarios.
+
+---
