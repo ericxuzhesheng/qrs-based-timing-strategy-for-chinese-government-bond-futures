@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", default=None, help="CSV/XLSX input file. If omitted, auto-discover a file.")
     parser.add_argument("--sheet-name", default=None, help="Excel sheet name or index. Defaults to the first sheet.")
     parser.add_argument("--contract", default="T", help="Contract label, e.g. T, TL, TF, TS.")
-    parser.add_argument("--start-date", default="2025-01-01")
+    parser.add_argument("--start-date", default="2024-01-01")
     parser.add_argument("--N", type=int, default=16)
     parser.add_argument("--M", type=int, default=600)
     parser.add_argument("--rolling-window", type=int, default=18)
@@ -125,8 +125,8 @@ def build_report(
     return rf'''# 基于 QRS 的中国国债期货择时研究报告 | QRS-Based Timing Strategy Report for Chinese Government Bond Futures
 
 <p align="center">
-  <a href="#zh"><img src="https://img.shields.io/badge/LANGUAGE-%E4%B8%AD%E6%96%87-E84D3D?style=for-the-badge&labelColor=3B3F47" alt="LANGUAGE 中文"></a>
-  <a href="#en"><img src="https://img.shields.io/badge/LANGUAGE-ENGLISH-2F73C9?style=for-the-badge&labelColor=3B3F47" alt="LANGUAGE ENGLISH"></a>
+<a href="#zh"><img src="https://img.shields.io/badge/LANGUAGE-%E4%B8%AD%E6%96%87-E84D3D?style=for-the-badge&labelColor=3B3F47" alt="LANGUAGE 中文"></a>
+<a href="#en"><img src="https://img.shields.io/badge/LANGUAGE-ENGLISH-2F73C9?style=for-the-badge&labelColor=3B3F47" alt="LANGUAGE ENGLISH"></a>
 </p>
 
 <a id="zh"></a>
@@ -139,84 +139,67 @@ def build_report(
 
 ### 1. 项目概述
 
-本报告展示基于 QRS 指标的中国国债期货择时研究流程。当前运行模式：`{metadata['mode']}`；当前运行合约：`{metadata['contract']}`；输入数据：`{metadata['input_file']}`；样本区间：`{metadata['start_date']} 至 {metadata['end_date']}`。
+本报告展示基于 QRS 指标的中国国债期货择时研究流程. 当前运行模式：`{metadata['mode']}`；当前运行合约：`{metadata['contract']}`；输入数据：`{metadata['input_file']}`；样本区间：`{metadata['start_date']} 至 {metadata['end_date']}`。
 
-### 2. 当前模式说明
+### 2. 核心模型逻辑
 
-仓库包含两个模式：
-
-- `daily_baseline`：先将 5 分钟数据聚合为日频，再计算 QRS 和日频 long/cash 回测，适合作为稳健 baseline，但不等价于主策略。
-- `intraday`：默认主策略，包括 5 分钟 QRS、日频趋势过滤映射回 5 分钟、long/short 状态机、可选 grid search。
-
-本次结果来自 `{metadata['mode']}`，数据频率为 `{metadata['data_frequency']}`，`allow_short={metadata['allow_short']}`，`periods_per_year={metadata['periods_per_year']}`，是否运行 grid search：`{metadata['run_grid_search']}`。
-
-### 3. QRS 指标解释
-
-QRS/RSRS 类指标通过价格区间中的阻力与支撑关系刻画趋势质量。本项目在 5 分钟 OHLC 上回归 `high = alpha + beta * low + epsilon`，将 beta 进行滚动 z-score 标准化，并使用 $R^2$ 的幂作为趋势拟合质量惩罚项。
-
-### 4. QRS 因子构建逻辑
+#### 2.1 QRS 因子构建
+QRS 类指标通过价格区间中的阻力与支撑关系刻画趋势质量. 在 5 分钟 OHLC 上执行局部回归：
 
 $$
 high_t = \alpha + \beta \cdot low_t + \varepsilon_t, \quad t \in \{{1,2,\ldots,N\}}
 $$
 
+对斜率 $\beta$ 进行滚动 Z-score 标准化，并引入 $R^2$ 作为惩罚项：
+
 $$
 qrs = zscore(\beta, M) \times (R^2)^n
 $$
 
-当前参数：`N={metadata['N']}`，`M={metadata['M']}`，`n={metadata['r2_power']}`。当 `normalize_penalty=True` 时，可进一步使用滚动均值归一化惩罚项；本次默认保持主流程的未归一化惩罚项。
-
-### 5. 信号设计与趋势过滤
-
+#### 2.2 信号设计与趋势过滤
 状态机规则：
+- **做多**：$QRS > +S$ 且日频趋势向上, 仓位设为 1；
+- **做空**：$QRS < -S$ 且日频趋势向下, 仓位设为 -1（若允许做空）；
+- **维持**：维持上一根 5 分钟 Bar 的原始仓位。
 
-- 做多：`qrs > +S` 且日频趋势向上，仓位设为 1；
-- 做空/防御：`qrs < -S` 且日频趋势向下，`allow_short=True` 时仓位设为 -1，否则设为 0；
-- 其他：维持上一根 5 分钟 bar 的原始仓位。
+### 3. 参数搜索空间与最佳参数
 
-趋势过滤从 5 分钟 close 聚合为日频 close 后计算，再映射回 5 分钟 bar。同一天所有 5 分钟 bar 共用当天趋势条件。本次趋势方法：`{metadata['trend_method']}`。
+默认搜索空间包含 $S$ 阈值、趋势判断方式及均线周期等.
 
-### 6. 防止未来函数
-
-所有交易仓位均滞后一根 5 分钟 bar 执行，以避免未来函数。具体实现为 `position = raw_position.shift(1).fillna(0)`，策略收益使用该滞后仓位乘以当前 bar 收益。
-
-### 7. 参数搜索空间与最佳参数
-
-默认搜索空间包括 `S=[0.2,0.3,0.4,0.5,0.6,0.7]`、`trend_method=[ma_compare, ma_cross, price_compare]`、`ma_len_days=[3,5,10,20]`、`compare_lag_days=[1,2,3]`、`ma_short=[3,5,10]`、`ma_long=[10,20,30]`。
-
-本次使用参数：
-
+本次回测采用的最佳参数：
 ```json
 {best_params_text}
 ```
 
-### 8. 回测结果
+### 4. 回测结果汇总
 
 {metric_table}
 
-### 9. Debug 对比信息
+### 5. Debug 辅助指标
 
 {debug_table}
 
-### 10. 图表
+### 6. 可视化图表
 
+#### 6.1 因子与价格叠加
 ![QRS Price Overlay](figures/qrs_price_overlay.png)
 
+#### 6.2 策略净值对比
 ![Strategy NAV](figures/nav_comparison.png)
 
+#### 6.3 策略回撤
 ![Drawdown](figures/drawdown.png)
 
+#### 6.4 最佳参数持仓分布
 ![Best Strategy Position](figures/best_strategy_position.png)
 
+#### 6.5 因子择时能力 (Timing Coefficient)
 ![QRS Future Return](figures/qrs_future_return.png)
 
-### 11. 局限性
+### 7. 免责声明
+本报告仅用于量化研究与代码示例，不构成任何投资建议或收益承诺.
 
-本研究未考虑手续费、滑点、保证金占用、展期规则和真实成交约束。结果依赖输入数据质量与样本区间，不构成投资建议。
-
-### 12. 免责声明
-
-本项目仅用于量化研究与代码示例，不构成任何投资建议或收益承诺。
+---
 
 <a id="en"></a>
 
@@ -230,82 +213,63 @@ Current language: English | [切换到中文](#zh)
 
 This report presents a QRS-based timing workflow for Chinese government bond futures. Current mode: `{metadata['mode']}`; contract: `{metadata['contract']}`; input data: `{metadata['input_file']}`; sample period: `{metadata['start_date']} to {metadata['end_date']}`.
 
-### 2. Mode Description
+### 2. Core Model Logic
 
-The repository contains two modes:
-
-- `daily_baseline`: aggregates 5-minute data to daily bars before QRS calculation and daily long/cash backtesting. It is a robust baseline but is not equivalent to the main strategy.
-- `intraday`: the default main strategy: 5-minute QRS, daily trend filter mapped back to intraday bars, long/short state machine, and optional grid search.
-
-This run uses `{metadata['mode']}`, data frequency `{metadata['data_frequency']}`, `allow_short={metadata['allow_short']}`, `periods_per_year={metadata['periods_per_year']}`, and grid search status `{metadata['run_grid_search']}`.
-
-### 3. QRS Indicator Interpretation
-
-QRS/RSRS-style indicators describe trend quality through resistance-support relationships. The strategy regresses `high = alpha + beta * low + epsilon` on 5-minute OHLC bars, standardizes beta with a rolling z-score, and penalizes it by a power of $R^2$.
-
-### 4. QRS Factor Construction
+#### 2.1 QRS Factor Construction
+QRS indicators describe trend quality through resistance-support relationships. A local regression is performed on 5-minute OHLC bars:
 
 $$
 high_t = \alpha + \beta \cdot low_t + \varepsilon_t, \quad t \in \{{1,2,\ldots,N\}}
 $$
 
+The slope $\beta$ is standardized via rolling Z-score and adjusted by an $R^2$ penalty term:
+
 $$
 qrs = zscore(\beta, M) \times (R^2)^n
 $$
 
-Current parameters: `N={metadata['N']}`，`M={metadata['M']}`，`n={metadata['r2_power']}`. When `normalize_penalty=True`, the penalty can be normalized by its rolling mean; this run keeps the original default without mean-normalizing the penalty.
+#### 2.2 Signal Design and Trend Filter
+The state machine rules:
+- **Long**: $QRS > +S$ and daily trend is UP, position becomes 1;
+- **Short**: $QRS < -S$ and daily trend is DOWN, position becomes -1 (if allowed);
+- **Otherwise**: Carry the previous raw position.
 
-### 5. Signal Design and Trend Filter
+### 3. Parameter Search Space & Best Parameters
 
-The state machine is:
-
-- Long: `qrs > +S` and the daily trend is up, position becomes 1;
-- Short / defensive: `qrs < -S` and the daily trend is down, position becomes -1 if `allow_short=True`, otherwise 0;
-- Otherwise: carry the previous raw position.
-
-The trend filter is computed from daily closes aggregated from 5-minute closes, then mapped back to every 5-minute bar. All bars in the same day share the same daily trend condition. Trend method for this run: `{metadata['trend_method']}`.
-
-### 6. Look-Ahead Bias Control
-
-All trading positions are lagged by one 5-minute bar to avoid look-ahead bias. The implementation uses `position = raw_position.shift(1).fillna(0)` and multiplies that lagged position by the current bar return.
-
-### 7. Parameter Search Space and Best Parameters
-
-The default search space includes `S=[0.2,0.3,0.4,0.5,0.6,0.7]`, `trend_method=[ma_compare, ma_cross, price_compare]`, `ma_len_days=[3,5,10,20]`, `compare_lag_days=[1,2,3]`, `ma_short=[3,5,10]`, and `ma_long=[10,20,30]`.
+The default search space covers $S$ thresholds, trend methods, and MA periods.
 
 Parameters used in this run:
-
 ```json
 {best_params_text}
 ```
 
-### 8. Backtest Results
+### 4. Backtest Results
 
 {metric_table}
 
-### 9. Debug Comparison
+### 5. Debug Metrics
 
 {debug_table}
 
-### 10. Figures
+### 6. Visualization
 
+#### 6.1 Factor & Price Overlay
 ![QRS Price Overlay](figures/qrs_price_overlay.png)
 
+#### 6.2 Strategy NAV Comparison
 ![Strategy NAV](figures/nav_comparison.png)
 
+#### 6.3 Strategy Drawdown
 ![Drawdown](figures/drawdown.png)
 
+#### 6.4 Best Strategy Position
 ![Best Strategy Position](figures/best_strategy_position.png)
 
+#### 6.5 Timing Coefficient (QRS Future Return)
 ![QRS Future Return](figures/qrs_future_return.png)
 
-### 11. Limitations
-
-The study does not include transaction costs, slippage, margin usage, contract roll rules, or real execution constraints. Results depend on data quality and sample period and are not investment advice.
-
-### 12. Disclaimer
-
-This project is for quantitative research and code demonstration only. It does not constitute investment advice or any return guarantee.
+### 7. Disclaimer
+This report is for quantitative research and demonstration only. It does not constitute investment advice or any return guarantee.
 '''
 
 
