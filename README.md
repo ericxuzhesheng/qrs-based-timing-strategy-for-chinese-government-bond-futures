@@ -30,20 +30,36 @@
 - **研究对象**：重点针对国债期货 T（10年期）、TL（30年期）等活跃合约。
 - **免责声明**：本项目仅作为量化研究框架展示，不构成任何投资建议。
 
-## 2. 核心模型逻辑
+## 2. 核心模型逻辑 (Core Model Logic)
 
 ### 2.1 QRS 因子构建
 
-QRS 类指标源自对 RSRS 指标的改进，核心思想是通过价格区间中的支撑与阻力关系来刻画趋势的“纯度”和“质量”。在滚动窗口 $N$ 内，对 5 分钟 Bar 的最高价和最低价进行局部线性回归：
+QRS 指标源自对 RSRS 指标的改进，核心思想是通过价格区间中的支撑与阻力关系来刻画趋势的“质量”。在滚动窗口 $N$ 内，对 5 分钟 Bar 的最高价和最低价进行局部线性回归：
 
 $$
 high_t = \alpha + \beta \cdot low_t + \varepsilon_t
 $$
 
-- **$\beta$ (斜率)**：反映了支撑与阻力关系的动态变化。
+- **$\beta$ (Slope)**：反映了支撑与阻力关系的动态变化。$\beta$ 越大，表示价格上沿相对于低点的扩张越明显。
 - **拟合优度 $R^2$**：用于衡量趋势拟合的可靠性。
 
-### 2.2 动态参数优化框架
+### 2.2 标准化与惩罚项 (Standardization & Penalty)
+
+为消除不同市场环境下 $\beta$ 的量纲差异，并过滤低拟合质量下的噪声信号，我们对 $\beta$ 进行滚动 Z-score 标准化，并引入 $R^2$ 的幂函数作为惩罚项：
+
+$$
+Signal_t = zscore(\beta_t, M) = \frac{\beta_t - \mu_{\beta,t}}{\sigma_{\beta,t}}
+$$
+
+$$
+Penalty_t = (R_t^2)^n
+$$
+
+$$
+QRS_t = Signal_t \times Penalty_t
+$$
+
+### 2.3 动态参数优化框架
 
 传统静态 Grid Search 容易陷入过拟合。本项目升级为动态参数选择框架：
 
@@ -53,6 +69,20 @@ $$
    - 第一步：在训练集内选择 Rank IC 最高的 QRS 因子参数 $(N, M, n)$。
    - 第二步：基于最优因子，选择训练集内 Sharpe Ratio 最高的信号参数 $(S, \text{trend\_method})$。
 4. **样本外执行 (Walk-Forward)**：将选出的参数用于下一段 $W_{test}$ 天的样本外区间。
+
+### 2.4 趋势过滤与状态机
+
+为了控制高频交易的过激行为，本项目引入了日频级别的趋势过滤机制。
+信号生成逻辑遵循状态机规则：
+
+$$
+Pos_t =
+\begin{cases}
+1, & QRS_t > S \text{ and } Trend_{up,t} = True \\
+-1, & QRS_t < -S \text{ and } Trend_{down,t} = True \\
+Pos_{t-1}, & \text{otherwise}
+\end{cases}
+$$
 
 ## 3. 策略模式
 
@@ -145,15 +175,48 @@ This project provides a comprehensive research framework for **QRS (Quantified R
 ## 2. Model Logic
 
 ### 2.1 QRS Factor Construction
-A local linear regression is performed on 5-minute bars: $high_t = \alpha + \beta \cdot low_t + \varepsilon_t$. The slope $\beta$ represents the dynamic relationship between support and resistance.
+A local linear regression is performed on 5-minute bars: 
 
-### 2.2 Dynamic Optimization Framework
+$$
+high_t = \alpha + \beta \cdot low_t + \varepsilon_t
+$$
+
+The slope $\beta$ represents the dynamic relationship between support and resistance.
+
+### 2.2 Standardization & Penalty
+To eliminate scale differences and filter noise, we apply rolling Z-score to $\beta$ and an $R^2$ penalty:
+
+$$
+Signal_t = zscore(\beta_t, M) = \frac{\beta_t - \mu_{\beta,t}}{\sigma_{\beta,t}}
+$$
+
+$$
+Penalty_t = (R_t^2)^n
+$$
+
+$$
+QRS_t = Signal_t \times Penalty_t
+$$
+
+### 2.3 Dynamic Optimization Framework
 Traditional grid searches often suffer from look-ahead bias and overfitting. This project implements a **Walk-Forward** framework:
 1. **Factor Evaluation**: Measure the factor's predictive power for future $h$ bars using Rank IC and Quantile Spreads.
 2. **Two-Step Selection**:
    - **Step 1**: Select the best QRS parameters $(N, M, n)$ based on Rank IC in the training window.
    - **Step 2**: Select the best signal parameters $(S, \text{trend})$ based on Sharpe Ratio in the training window.
 3. **Execution**: Apply optimized parameters to the subsequent out-of-sample test window.
+
+### 2.4 Trend Filter & State Machine
+The strategy uses a daily trend filter to align high-frequency signals with macro trends. The position management follows a state machine rule:
+
+$$
+Pos_t =
+\begin{cases}
+1, & QRS_t > S \text{ and } Trend_{up,t} = True \\
+-1, & QRS_t < -S \text{ and } Trend_{down,t} = True \\
+Pos_{t-1}, & \text{otherwise}
+\end{cases}
+$$
 
 ## 3. Strategy Modes
 
