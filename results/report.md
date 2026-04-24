@@ -15,111 +15,104 @@
 
 ### 1. 项目概述
 
-本报告展示基于 QRS 指标的中国国债期货择时研究流程。当前运行合约：`T`；输入数据：`10年国债期货_5min_3年.xlsx`；样本区间：`2022-12-16 至 2026-04-24`。
+本报告展示基于 QRS 指标的中国国债期货择时研究流程。当前运行模式：`intraday_v4`；当前运行合约：`T`；输入数据：`10年国债期货_5min_3年.xlsx`；样本区间：`2025-01-02 09:35:00 至 2026-04-24 11:30:00`。
 
-### 2. 研究动机
+### 2. 当前模式说明
 
-国债期货价格受到利率预期、资金面、风险偏好和政策变化影响。QRS/RSRS 类指标通过价格区间中的阻力与支撑关系刻画趋势质量，可作为日频择时因子。
+仓库包含两个模式：
+
+- `daily_baseline`：先将 5 分钟数据聚合为日频，再计算 QRS 和日频 long/cash 回测，适合作为稳健 baseline，但不等价于旧 v4。
+- `intraday_v4`：默认主策略，复现旧 v4 的核心逻辑，包括 5 分钟 QRS、日频趋势过滤映射回 5 分钟、long/short 状态机、可选 grid search。
+
+本次结果来自 `intraday_v4`，数据频率为 `5-minute intraday`，`allow_short=True`，`periods_per_year=13608`，是否运行 grid search：`True`。
 
 ### 3. QRS 指标解释
 
-本项目沿用原始 `qrs_timing.py` 的核心公式：在滚动窗口内回归 `high = alpha + beta * low + epsilon`，将斜率 beta 进行滚动 z-score 标准化，并使用 R² 的幂作为趋势拟合质量惩罚项。较高 QRS 通常代表趋势状态较强或上行动能较好，较低 QRS 代表趋势弱化或下行动能增强。QRS 是择时因子，不是完整交易系统。
+QRS/RSRS 类指标通过价格区间中的阻力与支撑关系刻画趋势质量。本项目 v4 兼容模式在 5 分钟 OHLC 上回归 `high = alpha + beta * low + epsilon`，将 beta 进行滚动 z-score 标准化，并使用 $R^2$ 的幂作为趋势拟合质量惩罚项。
 
-### QRS 因子构建逻辑
-
-#### 1. 截面/局部回归思想
-
-在一个滚动窗口内，将最高价 high 视为阶段性阻力，将最低价 low 视为阶段性支撑，建立局部线性回归：
+### 4. QRS 因子构建逻辑
 
 $$
 high_t = \alpha + \beta \cdot low_t + \varepsilon_t, \quad t \in \{1,2,\ldots,N\}
 $$
 
-其中，斜率 $\beta$ 用于衡量支撑与阻力的相对强度。直观上，若低点抬升时高点扩张更充分，回归斜率会更高，说明价格区间上沿的扩张能力更强；反之，若高点对低点抬升反应不足，则趋势质量下降。
-
-| 方向 | 解释 |
-| --- | --- |
-| $\beta$ 越大 | 价格上沿相对低点扩张更明显，趋势强度更高，偏多信号更强 |
-| $\beta$ 越小 | 价格上行动能弱化，趋势质量下降，偏空或防御信号更强 |
-
-#### 2. 降噪与标准化处理
-
-为解决不同时间段 $\beta$ 的量纲差异，并降低噪声和无效拟合影响，引入标准化信号项与 $R^2$ 归一化惩罚项。
-
 $$
-Signal = zscore(\beta, M) = \frac{\beta - \mu_{\beta}}{\sigma_{\beta}}
+qrs = zscore(\beta, M) \times (R^2)^n
 $$
 
-$$
-Penalty = \frac{(R^2)^n}{Mean((R^2)^n, M)}
-$$
+当前 v4 参数：`N=16`，`M=600`，`n=2.0`。当 `normalize_penalty=True` 时，可进一步使用滚动均值归一化惩罚项；本次默认保持 v4 主流程的未归一化惩罚项。
 
-$$
-RSP = Signal \times Penalty
-= zscore(\beta, M) \times \frac{(R^2)^n}{Mean((R^2)^n, M)}
-$$
+### 5. 信号设计与趋势过滤
 
-| 变量 | 含义 | 当前代码对应 |
-| --- | --- | --- |
-| $\beta$ | 滚动窗口内 high 对 low 回归得到的斜率 | `qrs_raw` |
-| $R^2$ | 回归拟合优度 | `qrs_r2` |
-| $M$ | 标准化窗口 | `zscore_window` |
-| $n$ | 惩罚项指数，基准值通常取 2 | `r2_power` |
-| $RSP$ | 经过标准化和拟合优度修正后的 QRS / RSP 信号 | `qrs_adjusted` |
+v4 兼容状态机规则：
 
-代码一致性说明：当前 `src/qrs_calculator.py` 默认计算 `qrs_adjusted = qrs_zscore * (R^2)^n`，即未开启均值归一化惩罚项；当 `normalize_penalty=True` 时，才使用上式中的 `Mean((R^2)^n, M)` 归一化。当前 `scripts/run_qrs_pipeline.py` 默认交易信号列为 `qrs_zscore`，`qrs_adjusted` 作为增强版 QRS / RSP 研究字段输出。
+- 做多：`qrs > +S` 且日频趋势向上，仓位设为 1；
+- 做空/防御：`qrs < -S` 且日频趋势向下，`allow_short=True` 时仓位设为 -1，否则设为 0；
+- 其他：维持上一根 5 分钟 bar 的原始仓位。
 
-#### 3. 双周期共振状态机
+趋势过滤从 5 分钟 close 聚合为日频 close 后计算，再映射回 5 分钟 bar。同一天所有 5 分钟 bar 共用当天趋势条件。本次趋势方法：`price_compare`。
 
-为降低日内或短周期信号的噪声，策略可以将 QRS / RSP 因子与日频均线趋势过滤结合，形成状态机映射。
+### 6. 防止未来函数
 
-- 做多信号：$RSP > S$ 且 $Trend_{up} = True$，仓位 $Pos = 1$；
-- 做空或防御信号：$RSP < -S$ 且 $Trend_{down} = True$，仓位 $Pos = -1$ 或 $0$；
-- 持仓维持：不满足上述条件时，维持上一期仓位。
+所有交易仓位均滞后一根 5 分钟 bar 执行，以避免未来函数。具体实现为 `position = raw_position.shift(1).fillna(0)`，策略收益使用该滞后仓位乘以当前 bar 收益。
 
-其中，$S$ 为触发阈值；$Trend$ 可由日频均线比较、均线交叉或价格与均线关系判断。当前模块化主 pipeline 实现为日频 long / cash 策略：当 `qrs_zscore > 0.7` 时进入多头，当 `qrs_zscore < -0.7` 时进入防御仓位 $Pos=0$，中性区域维持上一期原始仓位，最终交易仓位再滞后一日执行。$Pos=-1$ 属于可扩展的 long-short 设计，当前默认回测未启用。
+### 7. 参数搜索空间与最佳参数
 
-### 参数搜索空间
+默认搜索空间包括 `S=[0.2,0.3,0.4,0.5,0.6,0.7]`、`trend_method=[ma_compare, ma_cross, price_compare]`、`ma_len_days=[3,5,10,20]`、`compare_lag_days=[1,2,3]`、`ma_short=[3,5,10]`、`ma_long=[10,20,30]`。
 
-| 参数模块 | 参数名称 | 物理意义与逻辑设定 | 搜索空间 / 取值范围 |
-| --- | --- | --- | --- |
-| 信号触发 | 触发阈值 $S$ | 衡量 RSP 因子做多 / 做空信号的临界权值；当前 pipeline 映射为 `long_threshold` 与 `exit_threshold` | 例如：0.1 至 0.5，步长 0.1；当前默认 long/cash 阈值为 0.7 / -0.7 |
-| 趋势过滤 | 过滤方法 `trend_method` | 判定日频主趋势方向的核心机制；当前模块化 pipeline 暂未默认启用趋势过滤 | `ma_compare`：均线比较；`ma_cross`：均线交叉；`price_compare`：价格均线比较 |
-| 均线周期 | 均线长度 `ma_len_days` | 设定日频趋势跟踪的敏锐度，仅适用于均线比较与价格均线比较 | 例如：3 日至 10 日，步长 1 日 |
-| 均线周期 | 均线滞后期 `compare_lag_days` | 平滑短期波动，规避频繁伪信号，仅适用于均线比较 | 例如：1 日至 5 日，步长 1 日 |
-| 均线周期 | 长短均线窗口 `ma_short`, `ma_long` | 捕捉长短周期的动能共振交叉点，仅适用于均线交叉 | 短期：3、5、7；长期：10、15、20 |
+本次使用参数：
 
-该搜索空间来自原始研究脚本中的趋势过滤和阈值设计思路。当前仓库的可复现实证输出未重新进行网格搜索，因此本文不会将上述搜索空间表述为已优化参数结果，也不会据此伪造回测绩效。
+```json
+{
+  "S": 0.2,
+  "trend_method": "price_compare",
+  "ma_len_days": 3.0,
+  "compare_lag_days": null,
+  "ma_short": null,
+  "ma_long": null,
+  "cumulative_return": 0.15402056132022213,
+  "annualized_return": 0.12225561834188291,
+  "annualized_volatility": 0.024072513170350657,
+  "sharpe_ratio": 5.07863958684884,
+  "max_drawdown": -0.009742789231778737,
+  "calmar_ratio": 12.548318087710777,
+  "win_rate": 0.5275846768229552,
+  "turnover": 217.0,
+  "grid_search": true
+}
+```
 
-### 4. 数据与预处理
+### 8. 回测结果
 
-数据读取支持 CSV 和 Excel，自动识别日期、OHLC、成交量和持仓量字段。若输入为 5 分钟数据，pipeline 会聚合为日频 OHLCV 后再计算日频 QRS 与回测结果。
+| Metric                | QRS Strategy   | Long-only Benchmark   |
+|:----------------------|:---------------|:----------------------|
+| Cumulative Return     | 15.40%         | -0.16%                |
+| Annualized Return     | 12.23%         | -0.11%                |
+| Annualized Volatility | 2.41%          | 2.43%                 |
+| Sharpe Ratio          | 5.0786         | -0.0441               |
+| Max Drawdown          | -0.97%         | -2.27%                |
+| Calmar Ratio          | 12.5483        | -0.0472               |
+| Win Rate              | 52.76%         | 50.03%                |
+| Turnover              | 217.0000       | 0.0000                |
 
-### 5. 方法论
+### 9. Debug 对比信息
 
-- 滚动窗口：`18`
-- z-score 窗口：`120`
-- R² 惩罚幂：`2.0`
-- 信号列：`qrs_zscore`
+| Metric                  | Value               |
+|:------------------------|:--------------------|
+| sample_start            | 2025-01-02 09:35:00 |
+| sample_end              | 2026-04-24 11:30:00 |
+| bar_count               | 15983               |
+| average_position        | 0.0810              |
+| long_ratio              | 53.73%              |
+| short_ratio             | 45.63%              |
+| cash_ratio              | 0.64%               |
+| turnover_count          | 217.0000            |
+| benchmark_annual_return | -0.11%              |
+| strategy_annual_return  | 12.23%              |
+| strategy_sharpe         | 5.0786              |
+| max_drawdown            | -0.97%              |
 
-### 6. 信号设计
-
-当 `qrs_zscore > 0.7` 时，原始仓位设为 1；当 `qrs_zscore < -0.7` 时，原始仓位设为 0；中性区域维持前一日原始仓位。
-
-### 7. 防止未来函数
-
-所有交易仓位均滞后一日执行，以避免未来函数。QRS 指标、滚动 z-score 与滚动分位数均只使用当日及以前信息。
-
-### 8. 回测框架
-
-回测采用 close-to-close 日频收益；基准为 long-only 持有；策略收益为滞后一日后的仓位乘以当日收益。
-
-### 9. 结果展示
-
-| portfolio           | cumulative_return   | annualized_return   | annualized_volatility   |   sharpe_ratio | max_drawdown   |   calmar_ratio | win_rate   |   turnover |
-|:--------------------|:--------------------|:--------------------|:------------------------|---------------:|:---------------|---------------:|:-----------|-----------:|
-| QRS Strategy        | 0.88%               | 0.27%               | 1.59%                   |         0.1716 | -2.34%         |         0.117  | 54.00%     |         25 |
-| Long-only Benchmark | 8.83%               | 2.67%               | 2.42%                   |         1.1027 | -2.25%         |         1.1893 | 56.55%     |          0 |
+### 10. 图表
 
 ![QRS Price Overlay](figures/qrs_price_overlay.png)
 
@@ -127,15 +120,13 @@ $$
 
 ![Drawdown](figures/drawdown.png)
 
+![Best Strategy Position](figures/best_strategy_position.png)
+
 ![QRS Future Return](figures/qrs_future_return.png)
 
-### 10. 局限性
+### 11. 局限性
 
 本研究未考虑手续费、滑点、保证金占用、展期规则和真实成交约束。结果依赖输入数据质量与样本区间，不构成投资建议。
-
-### 11. 后续改进
-
-后续可加入合约展期处理、交易成本、参数稳定性检验、样本外验证、TF/TS/TL 多品种扩展和风险预算模块。
 
 ### 12. 免责声明
 
@@ -151,111 +142,104 @@ Current language: English | [切换到中文](#zh)
 
 ### 1. Project Overview
 
-This report presents a QRS-based timing research workflow for Chinese government bond futures. Current contract: `T`; input data: `10年国债期货_5min_3年.xlsx`; sample period: `2022-12-16 to 2026-04-24`.
+This report presents a QRS-based timing workflow for Chinese government bond futures. Current mode: `intraday_v4`; contract: `T`; input data: `10年国债期货_5min_3年.xlsx`; sample period: `2025-01-02 09:35:00 to 2026-04-24 11:30:00`.
 
-### 2. Research Motivation
+### 2. Mode Description
 
-Chinese government bond futures are driven by rate expectations, liquidity, risk appetite, and policy changes. QRS/RSRS-style indicators describe trend quality through resistance-support relationships and can be used as daily timing factors.
+The repository contains two modes:
+
+- `daily_baseline`: aggregates 5-minute data to daily bars before QRS calculation and daily long/cash backtesting. It is a robust baseline but is not equivalent to the old v4 strategy.
+- `intraday_v4`: the default main strategy, restoring the old v4 core logic: 5-minute QRS, daily trend filter mapped back to intraday bars, long/short state machine, and optional grid search.
+
+This run uses `intraday_v4`, data frequency `5-minute intraday`, `allow_short=True`, `periods_per_year=13608`, and grid search status `True`.
 
 ### 3. QRS Indicator Interpretation
 
-This project preserves the core formula from the original `qrs_timing.py`: regress `high = alpha + beta * low + epsilon` in a rolling window, standardize beta with a rolling z-score, and penalize it by a power of R². Higher QRS indicates stronger trend quality or better upside momentum, while lower QRS indicates weaker trends or downside pressure. QRS should be treated as a timing factor, not a complete trading system.
+QRS/RSRS-style indicators describe trend quality through resistance-support relationships. The v4-compatible mode regresses `high = alpha + beta * low + epsilon` on 5-minute OHLC bars, standardizes beta with a rolling z-score, and penalizes it by a power of $R^2$.
 
-### QRS Factor Construction
-
-#### 1. Local regression
-
-Within a rolling window, the high price is treated as a local resistance level and the low price is treated as a local support level. The factor starts from the local linear regression:
+### 4. QRS Factor Construction
 
 $$
 high_t = \alpha + \beta \cdot low_t + \varepsilon_t, \quad t \in \{1,2,\ldots,N\}
 $$
 
-The slope $\beta$ measures the relative relationship between resistance and support levels. A larger $\beta$ indicates stronger upside expansion and better trend quality, while a smaller $\beta$ indicates weaker trend quality or a more defensive regime.
-
-| Direction | Interpretation |
-| --- | --- |
-| Larger $\beta$ | Stronger expansion of the upper price range relative to lows, implying stronger trend quality and a more bullish signal |
-| Smaller $\beta$ | Weaker upside momentum and deteriorating trend quality, implying a defensive or bearish signal |
-
-#### 2. Standardization and penalty adjustment
-
-To remove scale differences across time and reduce noisy or weak regressions, the slope is standardized and adjusted by a mean-normalized $R^2$ penalty term.
-
 $$
-Signal = zscore(\beta, M) = \frac{\beta - \mu_{\beta}}{\sigma_{\beta}}
+qrs = zscore(\beta, M) \times (R^2)^n
 $$
 
-$$
-Penalty = \frac{(R^2)^n}{Mean((R^2)^n, M)}
-$$
+Current v4 parameters: `N=16`, `M=600`, `n=2.0`. When `normalize_penalty=True`, the penalty can be normalized by its rolling mean; this run keeps the original v4 default without mean-normalizing the penalty.
 
-$$
-RSP = Signal \times Penalty
-= zscore(\beta, M) \times \frac{(R^2)^n}{Mean((R^2)^n, M)}
-$$
+### 5. Signal Design and Trend Filter
 
-| Variable | Meaning | Current Code Mapping |
-| --- | --- | --- |
-| $\beta$ | Rolling regression slope of high on low | `qrs_raw` |
-| $R^2$ | Regression goodness of fit | `qrs_r2` |
-| $M$ | Standardization window | `zscore_window` |
-| $n$ | Penalty exponent, usually 2 as a baseline | `r2_power` |
-| $RSP$ | Standardized and fit-quality-adjusted QRS / RSP signal | `qrs_adjusted` |
+The v4-compatible state machine is:
 
-Implementation consistency note: `src/qrs_calculator.py` currently computes `qrs_adjusted = qrs_zscore * (R^2)^n` by default, without mean-normalizing the penalty. When `normalize_penalty=True` is enabled, the implementation uses the `Mean((R^2)^n, M)` denominator shown above. The default trading signal in `scripts/run_qrs_pipeline.py` currently uses `qrs_zscore`, while `qrs_adjusted` is exported as the enhanced QRS / RSP field for research extensions.
+- Long: `qrs > +S` and the daily trend is up, position becomes 1;
+- Short / defensive: `qrs < -S` and the daily trend is down, position becomes -1 if `allow_short=True`, otherwise 0;
+- Otherwise: carry the previous raw position.
 
-#### 3. Dual-horizon regime filter
+The trend filter is computed from daily closes aggregated from 5-minute closes, then mapped back to every 5-minute bar. All bars in the same day share the same daily trend condition. Trend method for this run: `price_compare`.
 
-To reduce intraday or short-horizon noise, the QRS / RSP factor can be combined with a daily moving-average trend filter as a regime-state machine.
+### 6. Look-Ahead Bias Control
 
-- Long signal: $RSP > S$ and $Trend_{up} = True$, position $Pos = 1$;
-- Defensive / short signal: $RSP < -S$ and $Trend_{down} = True$, position $Pos = -1$ or $0$;
-- Otherwise: keep previous position.
+All trading positions are lagged by one 5-minute bar to avoid look-ahead bias. The implementation uses `position = raw_position.shift(1).fillna(0)` and multiplies that lagged position by the current bar return.
 
-Here, $S$ is the trigger threshold, and $Trend$ can be defined by daily moving-average comparison, moving-average crossover, or price-vs-moving-average comparison. The current modular main pipeline implements a daily long / cash strategy: it enters long exposure when `qrs_zscore > 0.7`, moves to the defensive state $Pos=0$ when `qrs_zscore < -0.7`, carries the previous raw position in the neutral zone, and then lags the final trading position by one day. $Pos=-1$ is reserved for future long-short extension and is not enabled in the default backtest.
+### 7. Parameter Search Space and Best Parameters
 
-### Parameter Search Space
+The default search space includes `S=[0.2,0.3,0.4,0.5,0.6,0.7]`, `trend_method=[ma_compare, ma_cross, price_compare]`, `ma_len_days=[3,5,10,20]`, `compare_lag_days=[1,2,3]`, `ma_short=[3,5,10]`, and `ma_long=[10,20,30]`.
 
-| Parameter Module | Parameter Name | Economic / Strategy Meaning | Search Space / Candidate Range |
-| --- | --- | --- | --- |
-| Signal Trigger | Threshold $S$ | Critical threshold for long / short QRS signals; current pipeline maps this to `long_threshold` and `exit_threshold` | Example: 0.1 to 0.5, step 0.1; current long/cash defaults are 0.7 / -0.7 |
-| Trend Filter | `trend_method` | Core mechanism for identifying the daily trend direction; not enabled by default in the current modular pipeline | `ma_compare`: MA comparison; `ma_cross`: MA crossover; `price_compare`: price-MA comparison |
-| Moving Average Window | `ma_len_days` | Sensitivity of daily trend tracking, used for MA comparison and price-MA comparison | Example: 3 to 10 days, step 1 day |
-| Moving Average Window | `compare_lag_days` | Smooths short-term noise and reduces frequent false signals, used for MA comparison | Example: 1 to 5 days, step 1 day |
-| Moving Average Window | `ma_short`, `ma_long` | Captures momentum resonance between short-term and long-term moving averages, used for MA crossover | Short: 3, 5, 7; Long: 10, 15, 20 |
+Parameters used in this run:
 
-This search space follows the threshold and trend-filter design in the original research script. The reproducible outputs in the current repository did not rerun a full grid search, so these ranges are documented as candidate research settings rather than optimized performance results.
+```json
+{
+  "S": 0.2,
+  "trend_method": "price_compare",
+  "ma_len_days": 3.0,
+  "compare_lag_days": null,
+  "ma_short": null,
+  "ma_long": null,
+  "cumulative_return": 0.15402056132022213,
+  "annualized_return": 0.12225561834188291,
+  "annualized_volatility": 0.024072513170350657,
+  "sharpe_ratio": 5.07863958684884,
+  "max_drawdown": -0.009742789231778737,
+  "calmar_ratio": 12.548318087710777,
+  "win_rate": 0.5275846768229552,
+  "turnover": 217.0,
+  "grid_search": true
+}
+```
 
-### 4. Data and Preprocessing
+### 8. Backtest Results
 
-The loader supports CSV and Excel files and automatically detects date, OHLC, volume, and open-interest fields. If the input is 5-minute data, the pipeline aggregates it to daily OHLCV before computing daily QRS and backtest results.
+| Metric                | QRS Strategy   | Long-only Benchmark   |
+|:----------------------|:---------------|:----------------------|
+| Cumulative Return     | 15.40%         | -0.16%                |
+| Annualized Return     | 12.23%         | -0.11%                |
+| Annualized Volatility | 2.41%          | 2.43%                 |
+| Sharpe Ratio          | 5.0786         | -0.0441               |
+| Max Drawdown          | -0.97%         | -2.27%                |
+| Calmar Ratio          | 12.5483        | -0.0472               |
+| Win Rate              | 52.76%         | 50.03%                |
+| Turnover              | 217.0000       | 0.0000                |
 
-### 5. Methodology
+### 9. Debug Comparison
 
-- Rolling window: `18`
-- z-score window: `120`
-- R² penalty power: `2.0`
-- Signal column: `qrs_zscore`
+| Metric                  | Value               |
+|:------------------------|:--------------------|
+| sample_start            | 2025-01-02 09:35:00 |
+| sample_end              | 2026-04-24 11:30:00 |
+| bar_count               | 15983               |
+| average_position        | 0.0810              |
+| long_ratio              | 53.73%              |
+| short_ratio             | 45.63%              |
+| cash_ratio              | 0.64%               |
+| turnover_count          | 217.0000            |
+| benchmark_annual_return | -0.11%              |
+| strategy_annual_return  | 12.23%              |
+| strategy_sharpe         | 5.0786              |
+| max_drawdown            | -0.97%              |
 
-### 6. Signal Design
-
-When `qrs_zscore > 0.7`, the raw position is set to 1. When `qrs_zscore < -0.7`, the raw position is set to 0. The neutral zone carries the previous raw position.
-
-### 7. Look-Ahead Bias Control
-
-All trading positions are lagged by one trading day to avoid look-ahead bias. QRS, rolling z-score, and rolling percentile use only current and historical information.
-
-### 8. Backtest Framework
-
-The backtest uses daily close-to-close returns. The benchmark is long-only. Strategy return equals the one-day-lagged position multiplied by daily return.
-
-### 9. Results and Outputs
-
-| portfolio           | cumulative_return   | annualized_return   | annualized_volatility   |   sharpe_ratio | max_drawdown   |   calmar_ratio | win_rate   |   turnover |
-|:--------------------|:--------------------|:--------------------|:------------------------|---------------:|:---------------|---------------:|:-----------|-----------:|
-| QRS Strategy        | 0.88%               | 0.27%               | 1.59%                   |         0.1716 | -2.34%         |         0.117  | 54.00%     |         25 |
-| Long-only Benchmark | 8.83%               | 2.67%               | 2.42%                   |         1.1027 | -2.25%         |         1.1893 | 56.55%     |          0 |
+### 10. Figures
 
 ![QRS Price Overlay](figures/qrs_price_overlay.png)
 
@@ -263,15 +247,13 @@ The backtest uses daily close-to-close returns. The benchmark is long-only. Stra
 
 ![Drawdown](figures/drawdown.png)
 
+![Best Strategy Position](figures/best_strategy_position.png)
+
 ![QRS Future Return](figures/qrs_future_return.png)
 
-### 10. Limitations
+### 11. Limitations
 
 The study does not include transaction costs, slippage, margin usage, contract roll rules, or real execution constraints. Results depend on data quality and sample period and are not investment advice.
-
-### 11. Future Improvements
-
-Future work may include contract roll handling, trading costs, parameter stability checks, out-of-sample validation, TF/TS/TL expansion, and risk-budget modules.
 
 ### 12. Disclaimer
 

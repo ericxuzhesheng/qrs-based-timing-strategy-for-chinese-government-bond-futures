@@ -60,6 +60,48 @@ def rolling_slope(series: pd.Series, window: int) -> pd.Series:
     return series.rolling(window=window, min_periods=window).apply(slope, raw=True)
 
 
+def calculate_qrs_intraday(
+    data: pd.DataFrame,
+    N: int = 16,
+    M: int = 600,
+    n: float = 2.0,
+    normalize_penalty: bool = False,
+    penalty_mean_window: int | None = None,
+) -> pd.DataFrame:
+    required = {"date", "high", "low", "close"}
+    missing = required - set(data.columns)
+    if missing:
+        raise ValueError(f"Missing columns for QRS intraday calculation: {sorted(missing)}")
+
+    df = data.copy().sort_values("date").reset_index(drop=True)
+    row_count = len(df)
+    beta = np.full(row_count, np.nan)
+    r2 = np.full(row_count, np.nan)
+    low = df["low"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+
+    window = int(N)
+    for i in range(window, row_count):
+        beta[i], r2[i] = weighted_low_high_beta_r2(low[i - window : i], high[i - window : i])
+
+    out = df.copy()
+    out["beta"] = beta
+    out["r2"] = r2
+    out["z_beta"] = rolling_zscore(out["beta"], int(M))
+    penalty = out["r2"].clip(lower=0) ** float(n)
+    if normalize_penalty:
+        mean_window = int(penalty_mean_window) if penalty_mean_window is not None else int(M)
+        penalty_mean = penalty.rolling(window=mean_window, min_periods=mean_window).mean()
+        penalty = penalty / penalty_mean.replace(0.0, np.nan)
+    out["penalty"] = penalty
+    out["qrs"] = out["z_beta"] * out["penalty"]
+    out["qrs_raw"] = out["beta"]
+    out["qrs_r2"] = out["r2"]
+    out["qrs_zscore"] = out["z_beta"]
+    out["qrs_adjusted"] = out["qrs"]
+    return out
+
+
 def calculate_qrs(
     data: pd.DataFrame,
     rolling_window: int = 18,
